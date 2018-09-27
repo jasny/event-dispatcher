@@ -1,4 +1,4 @@
-Jasny event dispatcher
+Jasny Event Dispatcher
 ===
 
 [![Build Status](https://travis-ci.org/jasny/event-dispatcher.svg?branch=master)](https://travis-ci.org/jasny/event-dispatcher)
@@ -7,7 +7,7 @@ Jasny event dispatcher
 [![Packagist Stable Version](https://img.shields.io/packagist/v/jasny/event-dispatcher.svg)](https://packagist.org/packages/jasny/event-dispatcher)
 [![Packagist License](https://img.shields.io/packagist/l/jasny/event-dispatcher.svg)](https://packagist.org/packages/jasny/event-dispatcher)
 
-
+Event Dispatching is a common and well-tested mechanism to allow developers to inject logic into an application easily and consistently.
 
 Installation
 ---
