@@ -2,99 +2,82 @@
 
 namespace Jasny\EventDispatcher\Tests;
 
+use Jasny\EventDispatcher\Event;
 use Jasny\EventDispatcher\EventDispatcher;
+use Jasny\EventDispatcher\ListenerProvider;
 use PHPUnit\Framework\TestCase;
 
 class EventDispatcherTest extends TestCase
 {
-    public function testOn()
+    public function testWithListenerProvider()
     {
-        $base = new EventDispatcher;
+        $listenerProvider = $this->createMock(ListenerProvider::class);
+        $dispatcher = new EventDispatcher($listenerProvider);
 
-        $dispatcher = $base
-            ->on('before-save', function($subject, $payload) {
-                $payload['bio'] = $payload['bio'] ?? "$subject->name <{$subject->email}> just arrived";
+        $newListenerProvider = $this->createMock(ListenerProvider::class);
+        $newDispatcher = $dispatcher->withListenerProvider($newListenerProvider);
 
-                return $payload;
-            })
-            ->on('before-save.censor', function($subject, $payload) {
-                $payload['bio'] = strtr($payload['bio'], [$subject->email => '***@***.***']);
+        $this->assertInstanceOf(EventDispatcher::class, $newDispatcher);
+        $this->assertNotSame($dispatcher, $newDispatcher);
+        $this->assertSame($newListenerProvider, $newDispatcher->getListenerProvider());
 
-                return $payload;
-            })
-            ->on('json.censor', function($subject, $payload) {
-                return array_without($payload, ['password']);
-            })
-            ->on('sync', function($subject, $payload) {
-                return $payload + 10;
-            })
-            ->on('sync', function($subject, $payload) {
-                return $payload + 20;
-            });
+        // Idempotent
+        $this->assertSame($newDispatcher, $newDispatcher->withListenerProvider($newListenerProvider));
 
-        $this->assertInstanceOf(EventDispatcher::class, $base);
-        $this->assertNotSame($base, $dispatcher);
-
-        return $dispatcher;
+        // Immutable, old object is unchanged.
+        $this->assertSame($listenerProvider, $dispatcher->getListenerProvider());
     }
 
-    /**
-     * @expectedException \InvalidArgumentException
-     * @expectedExceptionMessage Invalid event name '*.foo': illegal character '*'
-     */
-    public function testOnInvalidName()
+    public function testDispatch()
     {
-        (new EventDispatcher)->on('*.foo', function() {});
+        $event = $this->createMock(\stdClass::class); // Doesn't need to be an Event object
+        $event->answer = 31;
+        $event->expects($this->never())->method($this->anything());
+
+        $listenerProvider = $this->createMock(ListenerProvider::class);
+        $listenerProvider->expects($this->once())->method('getListenersForEvent')
+            ->with($this->identicalTo($event))
+            ->willReturn([
+                function(object $event) {
+                    $event->answer++;
+                },
+                function(object $event) {
+                    $event->answer += 10;
+                },
+            ]);
+
+        $dispatcher = new EventDispatcher($listenerProvider);
+        $ret = $dispatcher->dispatch($event);
+
+        $this->assertSame($event, $ret);
+        $this->assertEquals(42, $event->answer);
     }
 
-    public function offProvider()
+    public function testDispatchStopPropegation()
     {
-        return [
-            ['before-save.censor', 4],
-            ['before-save', 3],
-            ['*.censor', 3],
-        ];
-    }
+        $event = $this->createMock(Event::class);
+        $event->expects($this->exactly(2))->method('isPropagationStopped')
+            ->willReturnOnConsecutiveCalls(false, true);
+        $event->expects($this->once())->method('setPayload')->with(1);
 
-    /**
-     * @depends testOn
-     * @dataProvider offProvider
-     */
-    public function testOff(string $event, int $nrHandlers, EventDispatcher $base)
-    {
-        $dispatcher = $base->off($event);
+        $listenerProvider = $this->createMock(ListenerProvider::class);
+        $listenerProvider->expects($this->once())->method('getListenersForEvent')
+            ->with($this->identicalTo($event))
+            ->willReturn([
+                function(Event $event) {
+                    $event->setPayload(1);
+                },
+                function(Event $event) {
+                    $event->setPayload(2);
+                },
+                function(Event $event) {
+                    $event->setPayload(3);
+                },
+            ]);
 
-        $this->assertInstanceOf(EventDispatcher::class, $base);
-        $this->assertNotSame($base, $dispatcher);
+        $dispatcher = new EventDispatcher($listenerProvider);
+        $ret = $dispatcher->dispatch($event);
 
-        $this->assertAttributeCount($nrHandlers, 'triggers', $dispatcher);
-
-        $this->assertSame($dispatcher, $dispatcher->off('before-save.censor'));
-    }
-
-
-    /**
-     * @depends testOn
-     */
-    public function testTriggerBeforeSave(EventDispatcher $dispatcher)
-    {
-        $payload = [
-            'name' => 'John Doe',
-            'email' => 'john.doe@example.com',
-            'age' => 37
-        ];
-        $subject = (object)(['foo' => 42] + $payload);
-
-        $result = $dispatcher->trigger('before-save', $subject, $payload);
-
-        $expected = [
-            'name' => 'John Doe',
-            'email' => 'john.doe@example.com',
-            'age' => 37,
-            'bio' => 'John Doe <***@***.***> just arrived'
-        ];
-        $this->assertEquals($expected, $result);
-
-        $this->assertEquals((object)(['foo' => 42] + $payload), $subject);
+        $this->assertSame($event, $ret);
     }
 }

@@ -4,85 +4,80 @@ declare(strict_types=1);
 
 namespace Jasny\EventDispatcher;
 
-use Improved as i;
-use Improved\IteratorPipeline\Pipeline;
-use function Jasny\str_contains;
+use Psr\EventDispatcher\EventDispatcherInterface;
+use Psr\EventDispatcher\ListenerProviderInterface;
+use Psr\EventDispatcher\StoppableEventInterface;
 
 /**
  * Event dispatcher.
  * @immutable
  */
-class EventDispatcher
+class EventDispatcher implements EventDispatcherInterface
 {
     /**
-     * @var array
+     * @var ListenerProviderInterface
      */
-    protected $triggers = [];
+    protected $listenerProvider;
 
 
     /**
-     * Bind a handler for an event.
+     * EventDispatcher constructor.
      *
-     * @param string   $event
-     * @param callable $handler
-     * @return static
+     * @param ListenerProviderInterface $listenerProvider
      */
-    public function on(string $event, callable $handler): self
+    public function __construct(ListenerProviderInterface $listenerProvider)
     {
-        if (str_contains($event, '*')) {
-            throw new \InvalidArgumentException("Invalid event name '$event': illegal character '*'");
-        }
+        $this->listenerProvider = $listenerProvider;
+    }
 
-        $clone = clone $this;
-        $clone->triggers[] = ['event' => $event, 'handler' => $handler];
 
-        return $clone;
+    /**
+     * Get the listener provider used by this dispatcher
+     *
+     * @return ListenerProviderInterface
+     */
+    public function getListenerProvider(): ListenerProviderInterface
+    {
+        return $this->listenerProvider;
     }
 
     /**
-     * Unbind a handler of an event.
+     * Get a dispatcher with a different/modified listener provider.
      *
-     * @param string $event  Event name, optionally with wildcards
-     * @return $this
+     * @param ListenerProviderInterface $listenerProvider
+     * @return static
      */
-    public function off(string $event): self
+    public function withListenerProvider(ListenerProviderInterface $listenerProvider): self
     {
-        $triggers = Pipeline::with($this->triggers)
-            ->filter(function ($trigger) use ($event) {
-                return !fnmatch($event, $trigger['event'], FNM_NOESCAPE)
-                    && !fnmatch("$event.*", $trigger['event'], FNM_NOESCAPE);
-            })
-            ->values()
-            ->toArray();
-
-        if (count($triggers) === count($this->triggers)) {
+        if ($this->listenerProvider === $listenerProvider) {
             return $this;
         }
 
         $clone = clone $this;
-        $clone->triggers = $triggers;
+        $clone->listenerProvider = $listenerProvider;
 
         return $clone;
     }
 
 
     /**
-     * Trigger an event.
+     * Dispatch an event.
      *
-     * @param string $event
-     * @param object $subject
-     * @param mixed  $payload
-     * @return mixed
+     * @param object $event
+     * @return object  The event that was passed, now modified by the listeners.
      */
-    public function trigger(string $event, $subject, $payload = null)
+    public function dispatch(object $event): object
     {
-        return Pipeline::with($this->triggers)
-            ->filter(function ($trigger) use ($event) {
-                return $event ===  $trigger['event'] || fnmatch("{$event}.*", $trigger['event'], FNM_NOESCAPE);
-            })
-            ->column('handler')
-            ->reduce(function ($payload, $handler) use ($subject) {
-                return i\function_call($handler, $subject, $payload);
-            }, $payload);
+        $listeners = $this->listenerProvider->getListenersForEvent($event);
+
+        foreach ($listeners as $listener) {
+            if ($event instanceof StoppableEventInterface && $event->isPropagationStopped()) {
+                break;
+            }
+
+            $listener($event);
+        }
+
+        return $event;
     }
 }
