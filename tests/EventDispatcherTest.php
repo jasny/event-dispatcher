@@ -2,11 +2,15 @@
 
 namespace Jasny\EventDispatcher\Tests;
 
-use Jasny\EventDispatcher\Event;
 use Jasny\EventDispatcher\EventDispatcher;
 use Jasny\EventDispatcher\ListenerProvider;
+use Jasny\EventDispatcher\Tests\Support\BeforeSaveEvent;
+use Jasny\EventDispatcher\Tests\Support\SumEvent;
 use PHPUnit\Framework\TestCase;
 
+/**
+ * @covers \Jasny\EventDispatcher\EventDispatcher
+ */
 class EventDispatcherTest extends TestCase
 {
     public function testWithListenerProvider()
@@ -30,19 +34,18 @@ class EventDispatcherTest extends TestCase
 
     public function testDispatch()
     {
-        $event = $this->createMock(\stdClass::class); // Doesn't need to be an Event object
-        $event->answer = 31;
-        $event->expects($this->never())->method($this->anything());
+        $event = new SumEvent();
+        $event->add(12);
 
         $listenerProvider = $this->createMock(ListenerProvider::class);
         $listenerProvider->expects($this->once())->method('getListenersForEvent')
             ->with($this->identicalTo($event))
             ->willReturn([
-                function(object $event) {
-                    $event->answer++;
+                function(SumEvent $event) {
+                    $event->add(20);
                 },
-                function(object $event) {
-                    $event->answer += 10;
+                function(SumEvent $event) {
+                    $event->add(10);
                 },
             ]);
 
@@ -50,12 +53,12 @@ class EventDispatcherTest extends TestCase
         $ret = $dispatcher->dispatch($event);
 
         $this->assertSame($event, $ret);
-        $this->assertEquals(42, $event->answer);
+        $this->assertEquals(42, $event->getTotal());
     }
 
     public function testDispatchStopPropegation()
     {
-        $event = $this->createMock(Event::class);
+        $event = $this->createMock(BeforeSaveEvent::class);
         $event->expects($this->exactly(2))->method('isPropagationStopped')
             ->willReturnOnConsecutiveCalls(false, true);
         $event->expects($this->once())->method('setPayload')->with(1);
@@ -64,13 +67,16 @@ class EventDispatcherTest extends TestCase
         $listenerProvider->expects($this->once())->method('getListenersForEvent')
             ->with($this->identicalTo($event))
             ->willReturn([
-                function(Event $event) {
+                function($arg) use ($event) {
+                    $this->assertSame($event, $arg);
                     $event->setPayload(1);
                 },
-                function(Event $event) {
+                function($arg) use ($event) {
+                    $this->assertSame($event, $arg);
                     $event->setPayload(2);
                 },
-                function(Event $event) {
+                function($arg) use ($event) {
+                    $this->assertSame($event, $arg);
                     $event->setPayload(3);
                 },
             ]);

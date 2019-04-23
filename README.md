@@ -12,6 +12,9 @@ A [PSR-14](https://www.php-fig.org/psr/psr-14/) compatible event dispatcher that
 Event dispatching is a common and well-tested mechanism to allow developers to inject logic into an application easily
 and consistently.
 
+The PSR only requires determining events based on their class name, any other method is optional. Libraries should only
+depend on the specification and not on the implementation, therefore each event type must have it's own class.
+
 Installation
 ---
 
@@ -20,38 +23,99 @@ Installation
 Usage
 ---
 
+#### 1. Define your own event classes
+
 ```php
-use Jasny\EventDispatcher\Event;
+namespace App\Event;
+
+/**
+ * Base class for all events in this application.
+ */
+class Base
+{
+    /** @var object */
+    protected $emitter;
+
+    /** @var mixed */
+    protected $payload;
+
+    public function __construct(object $emitter, $payload = null)
+    {
+        $this->emitter = $emitter;
+        $this->payload = $payload;
+    }
+    
+    public function getEmitter(): object
+    {
+        return $this->subject;
+    }
+
+    public function setPayload($payload): void
+    {
+        $this->payload = $payload;
+    }
+
+    public function getPayload()
+    {
+        return $this->payload;
+    }
+}
+
+/**
+ * Called before an entity is saved to the database.
+ */
+class BeforeSave extends Base
+{}
+
+/**
+ * Called when an entity is casted to json.
+ */
+class ToJson extends Base
+{} 
+```
+
+#### 2. Create listeners
+
+```php
+use App\Event;
 use Jasny\EventDispatcher\EventDispatcher;
 use Jasny\EventDispatcher\ListenerProvider;
 
 $listener = (new ListenerProvider)
-    ->on('before-save', function(Event $event): void {
-        $subject = $event->getSubject();
+    ->withListener(function(Event\BeforeSave $event): void {
+        $entity = $event->getEmitter();
         $payload = $event->getPayload();
         
         $payload['bio'] = $payload['bio'] ?? ($subject->name . " just arrived");
         $event->setPayload($payload);
     })
-    ->on('json', function(Event $event, $subject, $payload): void {
+    ->withListener(function(Event\ToJson $event): void {
         $payload = $event->getPayload();
         
         unset($payload['password']);
         $event->setPayload($payload);
     });
-    
+```
+
+The provider will use the type hint of the first argument of the lister to determine if the listener applies to the
+given event.  
+
+Listeners are executed in the order they're registered to the provider. It's not possible to prepend existing
+listeners.
+
+#### 3. Create the dispatcher
+
+```php
 $dispatcher = new EventDispatcher($listener);
 ```
 
-Listeners are executed in the order they're registered to the provider. It's not possible to prepend existing
-listeners. 
+#### 4. Dispatch an event
 
 Typically a subject will hold its own dispatcher and trigger events.
 
 ```php
-use Jasny\EventDispatcher\Event;
+use App\Event;
 use Jasny\EventDispatcher\EventDispatcher;
-use function Jasny\object_get_properties;
 
 class Foo implements JsonSerializable
 {
@@ -64,34 +128,69 @@ class Foo implements JsonSerializable
     
     public function jsonSerialize()
     {
-        $payload = object_get_properties($this);
+        $payload = get_object_vars($this);
     
-        return $this->eventDispatcher->dispatch(new Event('json', $this, $payload));
+        return $this->eventDispatcher->dispatch(new Event\ToJson($this, $payload));
     }
 }
 ```
 
-_`Event` is a mutable object that's passed from listener to listener. All other objects are immutable services._
+### Add listener
 
-### Remove listener
-
-If needed you can remove all listeners for an event with the `off()` method.
+`ListenerProvider` and `EventDispatcher` are immutable services. Methods `withListener` and `withListenerProvider` resp
+will create a modified copy of each service.
 
 ```php
-$newListener = $dispatcher->getListener()->off('before-save');
-$newDispatcher = $dispatcher->withListener($newListener);
+use App\Event;
+
+$newListener = $dispatcher->getListener()
+    ->off(function(Event\BeforeSave $event): void {
+        $payload = $event->getPayload();
+       
+        $payload['bio'] = strtr($payload['bio'], $payload['email'], '***@***.***');
+        $event->setPayload($payload);
+    });
+
+$newDispatcher = $dispatcher->withListenerProvider($newListener);
 ```
 
 ### Stoppable events
 
+The event must implement the `StoppableEventInterface` of PSR-14.
+
 ```php
-use Jasny\EventDispatcher\Event;
+namespace App\Event;
+
+use Psr\EventDispatcher\StoppableEventInterface;
+
+/**
+ * Called before an entity is saved to the database.
+ */
+class BeforeSave implememnts StoppableEventInterface
+{
+    // ...
+
+    public function stopPropagation(): void
+    {
+        $this->propagationStopped = true;
+    }
+
+    public function isPropagationStopped(): bool
+    {
+        return $this->propagationStopped;
+    }
+}
+```
+
+
+```php
+use App\Event;
 use Jasny\EventDispatcher\EventDispatcher;
 use Jasny\EventDispatcher\ListenerProvider;
 
 $listener = (new ListenerProvider)
-    ->on('before-save', function(Event $event): void {
-        $subject = $event->getSubject();
+    ->on(function(Event\BeforeSave $event): void {
+        $enity = $event->getEmitter();
         
         if (!$subject->isReady()) {
             $event->stopPropagation();
@@ -101,24 +200,24 @@ $listener = (new ListenerProvider)
 $dispatcher = new EventDispatcher($listener);
 ```
 
-### Event namespace
+### Listener namespace
 
-Event names may use a namespace, similar to events in `jQuery`.
+Listeners may be registered to the provider under a namespace.
 
 ```php
-use Jasny\EventDispatcher\Event;
+use App\Event;
 use Jasny\EventDispatcher\EventDispatcher;
 use Jasny\EventDispatcher\ListenerProvider;
 
 $listener = (new ListenerProvider)
-    ->on('before-save.censor', function(Event $event): void {
+    ->withListenerInNs('censor', function(Event\BeforeSave $event): void {
         $subject = $event->getSubject();
         $payload = $event->getPayload();
         
         $payload['bio'] = strtr($payload['bio'], $payload['email'], '***@***.***');
         $event->setPayload($payload);
     });
-    ->on('json.censor', function(Event $event): void {
+    ->withListenerInNs('censor.json', function(Event $event): void {
         $payload = $event->getPayload();
         
         unset($payload['password']);
@@ -126,32 +225,20 @@ $listener = (new ListenerProvider)
     });
 ```
 
-This can be used to remove all listeners within the namespace
+This can be used to remove all listeners within the namespace and all subnamespaces.
 
 ```php
-$newListeners = $dispatcher->getListenerProvider()->off('*.censor');
+$newListeners = $dispatcher->getListenerProvider()->withoutNs('censor');
 ```
 
-The `.*` is not required as suffix for `off`. The following call would remove `before-save.censor`
+_This example removes both the listener in the `censor` and `censor.json` namespace._
+
+#### Namespace wildcard
+
+You may use a wildcard to specify all subnamespaces regardless of the parent 
 
 ```php
-$newListeners = $dispatcher->getListenerProvider()->off('before-save');
+$newListeners = $dispatcher->getListenerProvider()->withoutNs('*.json');
 ```
 
-### Custom event classes
-
-Alternatively you can use the class name of the event class for registering listeners. This allows you to use custom
-event classes. It's not required for custom event classes to extend the `Event` class.
-
-```php
-use App\FooSaveEvent;
-use Jasny\EventDispatcher\EventDispatcher;
-use Jasny\EventDispatcher\ListenerProvider;
-
-$listener = (new ListenerProvider)
-    ->on(FooSaveEvent::class, function(FooSaveEvent $event): void {
-        // ...
-    });
-```
-
-_It's not possible to use match both on event name and class name._
+_This example removes the listener in the `censor.json` namespace._

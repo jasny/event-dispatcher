@@ -2,47 +2,75 @@
 
 namespace Jasny\ListenerProvider\Tests;
 
-use Jasny\EventDispatcher\Event;
 use Jasny\EventDispatcher\ListenerProvider;
+use Jasny\EventDispatcher\Tests\Support\BeforeSaveEvent;
+use Jasny\EventDispatcher\Tests\Support\ToJsonEvent;
+use Jasny\EventDispatcher\Tests\Support\SumEvent;
+use Jasny\ReflectionFactory\ReflectionFactory;
+use LogicException;
 use PHPUnit\Framework\TestCase;
-use Psr\EventDispatcher\StoppableEventInterface;
+use ReflectionException;
+use ReflectionFunction;
+use ReflectionParameter;
 
 /**
  * @covers \Jasny\EventDispatcher\ListenerProvider
  */
 class ListenerProviderTest extends TestCase
 {
-    public function testOn()
+    /**
+     * @var ListenerProvider
+     */
+    protected $provider;
+
+    public function setUp()
     {
         $base = new ListenerProvider();
 
-        $provider = $base
-            ->on('before-save', function(Event $event) {
-                $subject = $event->getSubject();
+        $this->provider = $base
+            ->withListener(function(BeforeSaveEvent $event) {
+                $emitter = $event->getEmitter();
                 $payload = $event->getPayload();
 
-                $payload['bio'] = $payload['bio'] ?? "$subject->name <{$subject->email}> just arrived";
+                $payload['bio'] = $payload['bio'] ?? "$emitter->name <{$emitter->email}> just arrived";
                 $event->setPayload($payload);
             })
-            ->on('before-save.censor', function(Event $event) {
-                $subject = $event->getSubject();
+            ->withListenerInNs('censor', function(BeforeSaveEvent $event) {
+                $emitter = $event->getEmitter();
                 $payload = $event->getPayload();
 
-                $payload['bio'] = strtr($payload['bio'], [$subject->email => '***@***.***']);
+                $payload['bio'] = strtr($payload['bio'], [$emitter->email => '***@***.***']);
                 $event->setPayload($payload);
             })
-            ->on('json.censor', function(Event $event) {
+            ->withListenerInNs('censor.json', function(ToJsonEvent $event) {
                 $payload = $event->getPayload();
                 unset($payload['password']);
 
                 $event->setPayload($payload);
             })
-            ->on('sync', function(Event $event) {
-                $event->setPayload($event->getPayload() + 10);
+            ->withListener(function(SumEvent $event) {
+                $event->add(10);
             })
-            ->on('sync', function(Event $event) {
-                $event->setPayload($event->getPayload() + 20);
+            ->withListener(function(SumEvent $event) {
+                $event->add(20);
             });
+    }
+
+    public function testWithListener()
+    {
+        $base = new ListenerProvider();
+        $provider = $base->withListener(function(BeforeSaveEvent $event) {});
+
+        $this->assertInstanceOf(ListenerProvider::class, $provider);
+        $this->assertNotSame($base, $provider);
+
+        return $provider;
+    }
+
+    public function testWithListenerInNs()
+    {
+        $base = new ListenerProvider();
+        $provider = $base->withListenerInNs('censor', function(BeforeSaveEvent $event) {});
 
         $this->assertInstanceOf(ListenerProvider::class, $provider);
         $this->assertNotSame($base, $provider);
@@ -52,29 +80,26 @@ class ListenerProviderTest extends TestCase
 
     /**
      * @expectedException \InvalidArgumentException
-     * @expectedExceptionMessage Invalid event name '*.foo': illegal character '*'
+     * @expectedExceptionMessage Invalid event ns '*.foo': illegal character '*'
      */
-    public function testOnInvalidName()
+    public function testWithListenerInvalidNs()
     {
-        (new ListenerProvider)->on('*.foo', function() {});
+        (new ListenerProvider)->withListenerInNs('*.foo', function() {});
     }
 
 
     /**
-     * @depends testOn
+     * @depends testWithListener
      */
-    public function testGetListenersForBeforeSave(ListenerProvider $provider)
+    public function testGetListenersForBeforeSave()
     {
-        $subject = (object)[
+        $emitter = (object)[
             'name' => 'John Doe',
             'email' => 'john.doe@example.com',
         ];
 
-        $listeners = $provider->getListenersForEvent(new Event('before-save'));
-        $this->assertCount(2, $listeners);
-
-        $event = $this->createMock(Event::class);
-        $event->expects($this->any())->method('getSubject')->willReturn($subject);
+        $event = $this->createMock(BeforeSaveEvent::class);
+        $event->expects($this->any())->method('getEmitter')->willReturn($emitter);
         $event->expects($this->exactly(2))->method('getPayload')
             ->willReturnOnConsecutiveCalls([], ['bio' => "John Doe <john.doe@example.com> just arrived"]);
         $event->expects($this->any())->method('setPayload')
@@ -83,84 +108,139 @@ class ListenerProviderTest extends TestCase
                 [['bio' => "John Doe <***@***.***> just arrived"]]
             );
 
+        $listeners = $this->provider->getListenersForEvent($event);
+        $this->assertCount(2, $listeners);
+
         ($listeners[0])($event);
         ($listeners[1])($event);
     }
 
-    /**
-     * @depends testOn
-     */
-    public function testGetListenersForJson(ListenerProvider $provider)
+    public function testGetListenersForJson()
     {
-        $listeners = $provider->getListenersForEvent(new Event('json'));
-        $this->assertCount(1, $listeners);
-
-        $event = $this->createMock(Event::class);
+        $event = $this->createMock(ToJsonEvent::class);
         $event->expects($this->once())->method('getPayload')
             ->willReturn(['username' => 'john', 'password' => '12345']);
         $event->expects($this->once())->method('setPayload')
             ->willReturn(['username' => 'john']);
 
+        $listeners = $this->provider->getListenersForEvent($event);
+        $this->assertCount(1, $listeners);
+
         ($listeners[0])($event);
+    }
+
+    public function testGetListenersForSum()
+    {
+        $event = new SumEvent();
+
+        $listeners = $this->provider->getListenersForEvent($event);
+        $this->assertCount(2, $listeners);
+
+        ($listeners[0])($event);
+        ($listeners[1])($event);
+
+        $this->assertEquals(30, $event->getTotal());
     }
 
 
     public function offProvider()
     {
         return [
-            ['sync', 2, 1, 0],
-            ['before-save.censor', 1, 1, 2],
-            ['before-save', 0, 1, 2],
-            ['*.censor', 1, 0, 2],
+            ['censor', 1, 0],
+            ['censor.json', 2, 0],
+            ['*.json', 2, 0],
         ];
     }
 
     /**
-     * @depends testOn
      * @dataProvider offProvider
      */
-    public function testOff(string $event, int $nrBeforeSave, int $nrJson, int $nrSync, ListenerProvider $base)
+    public function testWithoutNs(string $ns, int $nrBeforeSave, int $nrJson)
     {
-        $provider = $base->off($event);
+        $newProvider = $this->provider->withoutNs($ns);
 
-        $this->assertInstanceOf(ListenerProvider::class, $base);
-        $this->assertNotSame($base, $provider);
+        $this->assertInstanceOf(ListenerProvider::class, $newProvider);
+        $this->assertNotSame($this->provider, $newProvider);
 
-        $this->assertCount($nrBeforeSave, $provider->getListenersForEvent(new Event('before-save')));
-        $this->assertCount($nrJson, $provider->getListenersForEvent(new Event('json')));
-        $this->assertCount($nrSync, $provider->getListenersForEvent(new Event('sync')));
+        $listeners = $newProvider->getListenersForEvent(new BeforeSaveEvent((object)[]));
+        $this->assertCount($nrBeforeSave, $listeners);
+        $this->assertCount($nrJson, $newProvider->getListenersForEvent(new ToJsonEvent()));
+        $this->assertCount(2, $newProvider->getListenersForEvent(new SumEvent()));
+    }
+
+    public function testWithoutNsIdempotent()
+    {
+        $newProvider = $this->provider->withoutNs('censor');
+
+        $this->assertInstanceOf(ListenerProvider::class, $newProvider);
+        $this->assertNotSame($this->provider, $newProvider);
+
+        $this->assertSame($newProvider, $newProvider->withoutNs('censor'));
+        $this->assertSame($newProvider, $newProvider->withoutNs('censor.json')); // Already removed
+        $this->assertSame($newProvider, $newProvider->withoutNs('does-not-exist'));
+    }
+
+
+    /**
+     * @expectedException LogicException
+     * @expectedExceptionMessage Invalid event listener: bad callable
+     */
+    public function testErrorReflectionException()
+    {
+        $function = function() {};
+
+        $reflectionFactory = $this->createMock(ReflectionFactory::class);
+        $reflectionFactory->expects($this->once())->method('reflectFunction')
+            ->with($this->identicalTo($function))
+            ->willThrowException(new ReflectionException("bad callable"));
+
+        $provider = new ListenerProvider($reflectionFactory);
+        $provider->withListener($function);
     }
 
     /**
-     * @depends testOn
+     * @expectedException LogicException
+     * @expectedExceptionMessage Invalid event listener: No parameters defined
      */
-    public function testOffIdempotent(ListenerProvider $base)
+    public function testErrorNoParameters()
     {
-        $provider = $base->off('before-save');
+        $function = function() {};
 
-        $this->assertInstanceOf(ListenerProvider::class, $base);
-        $this->assertNotSame($base, $provider);
+        $reflFn = $this->createMock(ReflectionFunction::class);
+        $reflFn->expects($this->once())->method('getNumberOfParameters')->willReturn(0);
+        $reflFn->expects($this->never())->method('getParameters');
 
-        $this->assertSame($provider, $provider->off('before-save'));
-        $this->assertSame($provider, $provider->off('before-save.censor'));
-        $this->assertSame($provider, $provider->off('does-not-exist'));
+        $reflectionFactory = $this->createMock(ReflectionFactory::class);
+        $reflectionFactory->expects($this->once())->method('reflectFunction')
+            ->with($this->identicalTo($function))
+            ->willReturn($reflFn);
+
+        $provider = new ListenerProvider($reflectionFactory);
+        $provider->withListener($function);
     }
 
-    public function testCustomClass()
+    /**
+     * @expectedException LogicException
+     * @expectedExceptionMessage Invalid event listener: No type hint for parameter $foo
+     */
+    public function testErrorNoParameterHint()
     {
-        $event = new class() implements StoppableEventInterface {
-            public function isPropagationStopped(): bool
-            {
-                return false;
-            }
-        };
-        $listener = function(object $event) {};
+        $function = function($a) {};
 
-        $provider = (new ListenerProvider)->on(StoppableEventInterface::class, $listener);
+        $reflParam = $this->createMock(ReflectionParameter::class);
+        $reflParam->expects($this->once())->method('getType')->willReturn(null);
+        $reflParam->expects($this->once())->method('getName')->willReturn('foo');
 
-        $listeners = $provider->getListenersForEvent($event);
+        $reflFn = $this->createMock(ReflectionFunction::class);
+        $reflFn->expects($this->once())->method('getNumberOfParameters')->willReturn(1);
+        $reflFn->expects($this->once())->method('getParameters')->willReturn([$reflParam]);
 
-        $this->assertCount(1, $listeners);
-        $this->assertSame($listener, $listeners[0]);
+        $reflectionFactory = $this->createMock(ReflectionFactory::class);
+        $reflectionFactory->expects($this->once())->method('reflectFunction')
+            ->with($this->identicalTo($function))
+            ->willReturn($reflFn);
+
+        $provider = new ListenerProvider($reflectionFactory);
+        $provider->withListener($function);
     }
 }

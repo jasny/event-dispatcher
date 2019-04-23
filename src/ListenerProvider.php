@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Jasny\EventDispatcher;
 
 use Improved\IteratorPipeline\Pipeline;
+use Jasny\ReflectionFactory\ReflectionFactory;
+use LogicException;
 use Psr\EventDispatcher\ListenerProviderInterface;
+use ReflectionException;
 
 /**
  * Event dispatcher.
@@ -14,42 +17,105 @@ use Psr\EventDispatcher\ListenerProviderInterface;
 class ListenerProvider implements ListenerProviderInterface
 {
     /**
+     * @var ReflectionFactory
+     */
+    protected $reflectionFactory;
+
+    /**
      * @var array
      */
     protected $listeners = [];
 
 
     /**
+     * ListenerProvider constructor.
+     *
+     * @param ReflectionFactory|null $reflectionFactory
+     */
+    public function __construct(ReflectionFactory $reflectionFactory = null)
+    {
+        $this->reflectionFactory = $reflectionFactory ?? new ReflectionFactory();
+    }
+
+
+    /**
      * Bind a handler for an event.
      *
-     * @param string   $eventName
      * @param callable $listener
      * @return static
+     * @throws LogicException if listener is invalid
      */
-    public function on(string $eventName, callable $listener): self
+    public function withListener(callable $listener): self
     {
-        if (strpos($eventName, '*') !== false) {
-            throw new \InvalidArgumentException("Invalid event name '$eventName': illegal character '*'");
+        return $this->withListenerInNs('', $listener);
+    }
+
+    /**
+     * Bind a handler for an event.
+     *
+     * @param string   $ns
+     * @param callable $listener
+     * @return static
+     * @throws LogicException if listener is invalid
+     */
+    public function withListenerInNs(string $ns, callable $listener): self
+    {
+        if (strpos($ns, '*') !== false) {
+            throw new \InvalidArgumentException("Invalid event ns '$ns': illegal character '*'");
         }
 
+        $class = $this->getEventClassForListener($listener);
+
         $clone = clone $this;
-        $clone->listeners[] = ['event' => $eventName, 'listener' => $listener];
+        $clone->listeners[] = ['ns' => $ns, 'class' => $class, 'listener' => $listener];
 
         return $clone;
     }
 
     /**
-     * Unbind a handler of an event.
+     * Use reflection to get the event class from the first argument
      *
-     * @param string $eventName  Event name, optionally with wildcards
-     * @return $this
+     * @param callable $listener
+     * @return string
+     * @throws LogicException
      */
-    public function off(string $eventName): self
+    protected function getEventClassForListener(callable $listener): string
+    {
+        try {
+            $reflFn = $this->reflectionFactory->reflectFunction($listener);
+        } catch (ReflectionException $exception) {
+            throw new LogicException("Invalid event listener: " . $exception->getMessage());
+        }
+
+        if ($reflFn->getNumberOfParameters() === 0) {
+            throw new LogicException("Invalid event listener: No parameters defined");
+        }
+
+        [$reflParam] = $reflFn->getParameters();
+        $class = $reflParam->getType();
+
+        if ($class === null) {
+            throw new LogicException(sprintf(
+                'Invalid event listener: No type hint for parameter $%s',
+                $reflParam->getName()
+            ));
+        }
+
+        return $class->getName();
+    }
+
+    /**
+     * Remove all listeners of the specified namespace.
+     *
+     * @param string $ns  Namespace, optionally with wildcards
+     * @return static
+     */
+    public function withoutNs(string $ns): self
     {
         $listeners = Pipeline::with($this->listeners)
-            ->filter(function ($trigger) use ($eventName) {
-                return !fnmatch($eventName, $trigger['event'], FNM_NOESCAPE)
-                    && !fnmatch("$eventName.*", $trigger['event'], FNM_NOESCAPE);
+            ->filter(function ($trigger) use ($ns) {
+                return !fnmatch($ns, $trigger['ns'], FNM_NOESCAPE)
+                    && !fnmatch("$ns.*", $trigger['ns'], FNM_NOESCAPE);
             })
             ->values()
             ->toArray();
@@ -66,20 +132,16 @@ class ListenerProvider implements ListenerProviderInterface
 
 
     /**
-     * Get the relevant listeners for the given event
+     * Get the relevant listeners for the given event.
      *
      * @param object $event
      * @return callable[]
      */
     public function getListenersForEvent(object $event): iterable
     {
-        $eventName = $event instanceof Event ? $event->getName() : null;
-
         return Pipeline::with($this->listeners)
-            ->filter(function ($trigger) use ($event, $eventName) {
-                return is_a($event, $trigger['event'])
-                    || $eventName === $trigger['event']
-                    || ($eventName !== null && fnmatch("{$eventName}.*", $trigger['event'], FNM_NOESCAPE));
+            ->filter(function ($trigger) use ($event) {
+                return $this->reflectionFactory->isA($event, $trigger['class']);
             })
             ->column('listener')
             ->values()
