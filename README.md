@@ -86,7 +86,7 @@ $listener = (new ListenerProvider)
         $entity = $event->getEmitter();
         $payload = $event->getPayload();
         
-        $payload['bio'] = $payload['bio'] ?? ($subject->name . " just arrived");
+        $payload['bio'] = $payload['bio'] ?? ($entity->name . " just arrived");
         $event->setPayload($payload);
     })
     ->withListener(function(Event\ToJson $event): void {
@@ -190,9 +190,9 @@ use Jasny\EventDispatcher\ListenerProvider;
 
 $listener = (new ListenerProvider)
     ->on(function(Event\BeforeSave $event): void {
-        $enity = $event->getEmitter();
+        $entity = $event->getEmitter();
         
-        if (!$subject->isReady()) {
+        if (!$entity->isReady()) {
             $event->stopPropagation();
         }
     });
@@ -211,7 +211,6 @@ use Jasny\EventDispatcher\ListenerProvider;
 
 $listener = (new ListenerProvider)
     ->withListenerInNs('censor', function(Event\BeforeSave $event): void {
-        $subject = $event->getSubject();
         $payload = $event->getPayload();
         
         $payload['bio'] = strtr($payload['bio'], $payload['email'], '***@***.***');
