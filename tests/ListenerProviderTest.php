@@ -63,8 +63,6 @@ class ListenerProviderTest extends TestCase
 
         $this->assertInstanceOf(ListenerProvider::class, $provider);
         $this->assertNotSame($base, $provider);
-
-        return $provider;
     }
 
     public function testWithListenerInNs()
@@ -143,7 +141,7 @@ class ListenerProviderTest extends TestCase
     }
 
 
-    public function offProvider()
+    public function withoutNsProvider()
     {
         return [
             ['censor', 1, 0],
@@ -153,7 +151,7 @@ class ListenerProviderTest extends TestCase
     }
 
     /**
-     * @dataProvider offProvider
+     * @dataProvider withoutNsProvider
      */
     public function testWithoutNs(string $ns, int $nrBeforeSave, int $nrJson)
     {
@@ -178,6 +176,40 @@ class ListenerProviderTest extends TestCase
         $this->assertSame($newProvider, $newProvider->withoutNs('censor'));
         $this->assertSame($newProvider, $newProvider->withoutNs('censor.json')); // Already removed
         $this->assertSame($newProvider, $newProvider->withoutNs('does-not-exist'));
+    }
+
+
+    public function testCallableObject()
+    {
+        $callable = new class() {
+            public function __invoke(SumEvent $event)
+            {
+            }
+        };
+
+        $base = new ListenerProvider();
+        $provider = $base->withListener($callable);
+
+        $listeners = $provider->getListenersForEvent(new SumEvent());
+        $this->assertCount(1, $listeners);
+        $this->assertSame([$callable], $listeners);
+    }
+
+    public function testCallableMethod()
+    {
+        $object = new class() {
+            public function foo(SumEvent $event)
+            {
+            }
+        };
+        $callable = [$object, 'foo'];
+
+        $base = new ListenerProvider();
+        $provider = $base->withListener($callable);
+
+        $listeners = $provider->getListenersForEvent(new SumEvent());
+        $this->assertCount(1, $listeners);
+        $this->assertSame([$callable], $listeners);
     }
 
 

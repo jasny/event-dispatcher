@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Jasny\EventDispatcher;
 
+use Closure;
 use Improved\IteratorPipeline\Pipeline;
 use Jasny\ReflectionFactory\ReflectionFactory;
 use LogicException;
@@ -81,8 +82,14 @@ class ListenerProvider implements ListenerProviderInterface
      */
     protected function getEventClassForListener(callable $listener): string
     {
+        if (!$listener instanceof Closure && is_object($listener)) {
+            $listener = [$listener, '__invoke']; // Type hint means we're sure that the object is callable
+        }
+
         try {
-            $reflFn = $this->reflectionFactory->reflectFunction($listener);
+            $reflFn = is_array($listener)
+                ? $this->reflectionFactory->reflectMethod($listener[0], $listener[1])
+                : $this->reflectionFactory->reflectFunction($listener);
         } catch (ReflectionException $exception) {
             throw new LogicException("Invalid event listener: " . $exception->getMessage());
         }
