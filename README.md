@@ -31,7 +31,7 @@ namespace App\Event;
 /**
  * Base class for all events in this application.
  */
-class Base
+abstract class Base
 {
     /** @var object */
     protected $emitter;
