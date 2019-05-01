@@ -1,6 +1,6 @@
 {
     "name": "jasny/event-dispatcher",
-    "description": "",
+    "description": "PSR-14 compatible event dispatcher that's easy to use",
     "license": "MIT",
     "type": "library",
     "authors": [
