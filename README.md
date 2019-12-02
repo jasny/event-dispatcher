@@ -45,9 +45,9 @@ abstract class Base
         $this->payload = $payload;
     }
     
-    public function getEmitter(): object
+    final public function getEmitter(): object
     {
-        return $this->subject;
+        return $this->emitter;
     }
 
     public function setPayload($payload): void
